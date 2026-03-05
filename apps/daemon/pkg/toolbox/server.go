@@ -173,6 +173,9 @@ func (s *server) Start() error {
 	processController := r.Group("/process")
 	{
 		processController.POST("/execute", process.ExecuteCommand(processLogger))
+		processController.POST("/execute-tty", process.ExecuteTTY(processLogger))
+		processController.GET("/execute-tty/:sessionId", process.ConnectExecuteTTY(processLogger))
+		processController.POST("/execute-tty/:sessionId/resize", process.ResizeExecuteTTY(processLogger))
 
 		sessionController := session.NewSessionController(s.logger, s.configDir, s.WorkDir, s.terminationGracePeriodSeconds, s.terminationCheckIntervalMilliseconds)
 		sessionGroup := processController.Group("/session")

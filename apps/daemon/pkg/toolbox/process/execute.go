@@ -45,6 +45,11 @@ func ExecuteCommand(logger *slog.Logger) gin.HandlerFunc {
 			cmd.Dir = *request.Cwd
 		}
 
+		// Note: TTY support is recognized but requires WebSocket-based interaction via PTY endpoints
+		if request.TTY != nil && *request.TTY {
+			logger.Debug("TTY requested for command", "command", cmdParts[0])
+		}
+
 		// set maximum execution time
 		timeout := 360 * time.Second
 		if request.Timeout != nil && *request.Timeout > 0 {
