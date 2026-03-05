@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import axios from 'axios'
 import {
   Configuration,
   ProcessApi,
@@ -14,6 +15,7 @@ import {
   PtySessionInfo,
   SessionSendInputRequest,
 } from '@daytonaio/toolbox-api-client'
+import { TtyExecOptions } from './types/TtyExec'
 import { SandboxCodeToolbox } from './Sandbox'
 import { ExecuteResponse } from './types/ExecuteResponse'
 import { ArtifactParser } from './utils/ArtifactParser'
@@ -658,6 +660,93 @@ export class Process {
   @WithInstrumentation()
   public async resizePtySession(sessionId: string, cols: number, rows: number): Promise<PtySessionInfo> {
     return (await this.apiClient.resizePtySession(sessionId, { cols, rows })).data
+  }
+
+  /**
+   * Execute a command with TTY (pseudo-terminal) support.
+   *
+   * Creates an interactive TTY session that runs a specific command with full terminal
+   * support, bidirectional stdin/stdout streaming, and terminal resize capability.
+   * Unlike `createPty`, this runs a single command rather than an interactive shell.
+   *
+   * @param {TtyExecOptions} options - TTY execution options including:
+   *                                   - command: The command to execute
+   *                                   - args: Command arguments
+   *                                   - cwd: Working directory
+   *                                   - timeout: Max execution time in seconds
+   *                                   - cols: Terminal columns (default: 80)
+   *                                   - rows: Terminal rows (default: 24)
+   *                                   - envs: Environment variables
+   *                                   - onData: Callback for terminal output
+   * @returns {Promise<PtyHandle>} PTY handle for managing the session
+   *
+   * @example
+   * // Run a command with TTY support and stream output
+   * const handle = await process.executeTty({
+   *   command: 'python3',
+   *   args: ['-i'],
+   *   cols: 120,
+   *   rows: 30,
+   *   onData: (data) => {
+   *     process.stdout.write(new TextDecoder().decode(data));
+   *   },
+   * });
+   *
+   * // Send input to the command
+   * await handle.sendInput('print("Hello from TTY!")\n');
+   * await handle.sendInput('exit()\n');
+   *
+   * // Wait for completion
+   * const result = await handle.wait();
+   * console.log(`Exited with code: ${result.exitCode}`);
+   *
+   * // Clean up
+   * await handle.disconnect();
+   */
+  @WithInstrumentation()
+  public async executeTty(options: TtyExecOptions): Promise<PtyHandle> {
+    const headers = (this.clientConfig.baseOptions?.headers as Record<string, string>) || {}
+
+    // Create the TTY execution session
+    const response = await axios.post(
+      `${this.clientConfig.basePath}/process/execute-tty`,
+      {
+        command: options.command,
+        args: options.args,
+        cwd: options.cwd,
+        timeout: options.timeout,
+        cols: options.cols,
+        rows: options.rows,
+        envs: options.envs,
+      },
+      { headers },
+    )
+    const sessionId: string = response.data.sessionId
+
+    // Connect via WebSocket
+    const wsUrl = `${this.clientConfig.basePath.replace(/^http/, 'ws')}/process/execute-tty/${sessionId}`
+    const ws = await createSandboxWebSocket(wsUrl, headers, this.getPreviewToken)
+
+    // Build a PtyHandle reusing the same WebSocket protocol
+    const handle = new PtyHandle(
+      ws,
+      async (cols: number, rows: number) => {
+        await axios.post(
+          `${this.clientConfig.basePath}/process/execute-tty/${sessionId}/resize`,
+          { cols, rows },
+          { headers },
+        )
+        return {} as PtySessionInfo
+      },
+      async () => {
+        // No dedicated kill endpoint for execute-tty; callers can send Ctrl+C via sendInput
+      },
+      options.onData,
+      sessionId,
+    )
+
+    await handle.waitForConnection()
+    return handle
   }
 }
 

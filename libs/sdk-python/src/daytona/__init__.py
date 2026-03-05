@@ -34,6 +34,8 @@ from .common.image import Image
 from .common.lsp_server import LspCompletionPosition, LspLanguageId
 from .common.process import CodeRunParams, ExecuteResponse, ExecutionArtifacts, OutputHandler, SessionExecuteRequest
 from .common.pty import PtySize
+from .handle.async_pty_handle import AsyncPtyHandle
+from .handle.pty_handle import PtyHandle
 from .common.sandbox import Resources
 from .common.snapshot import CreateSnapshotParams
 from .common.volume import VolumeMount
@@ -80,6 +82,8 @@ __all__ = [
     "CreateSandboxFromSnapshotParams",
     "CreateSnapshotParams",
     "PtySize",
+    "PtyHandle",
+    "AsyncPtyHandle",
     "LspCompletionPosition",
     "ExecutionArtifacts",
     "ExecuteResponse",

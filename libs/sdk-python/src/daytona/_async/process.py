@@ -8,6 +8,7 @@ import re
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 
+import httpx
 import websockets
 from daytona_toolbox_api_client_async import (
     Command,
@@ -714,3 +715,113 @@ class AsyncProcess:
             session_id=session_id,
             request=PtyResizeRequest(cols=pty_size.cols, rows=pty_size.rows),
         )
+
+    @intercept_errors(message_prefix="Failed to execute TTY command: ")
+    @with_instrumentation()
+    async def exec_tty(
+        self,
+        command: str,
+        args: list[str] | None = None,
+        cwd: str | None = None,
+        timeout: int | None = None,
+        cols: int | None = None,
+        rows: int | None = None,
+        envs: dict[str, str] | None = None,
+    ) -> AsyncPtyHandle:
+        """Execute a command with TTY (pseudo-terminal) support.
+
+        Creates an interactive TTY session that runs a specific command with full terminal
+        support, bidirectional stdin/stdout streaming, and terminal resize capability.
+        Unlike ``create_pty_session``, this runs a single command rather than an
+        interactive shell.
+
+        Args:
+            command (str): Command to execute.
+            args (list[str] | None): Command arguments.
+            cwd (str | None): Working directory for the command. Defaults to the
+                sandbox's working directory.
+            timeout (int | None): Maximum time in seconds to wait for the command to
+                complete. 0 means wait indefinitely.
+            cols (int | None): Number of terminal columns. Defaults to 80.
+            rows (int | None): Number of terminal rows. Defaults to 24.
+            envs (dict[str, str] | None): Environment variables for the command.
+
+        Returns:
+            AsyncPtyHandle: Handle for managing the TTY session. Use ``send_input`` to
+                write to stdin, ``wait`` to block until the command exits, and
+                ``disconnect`` to close the connection.
+
+        Example:
+            ```python
+            handle = await sandbox.process.exec_tty(
+                command="python3",
+                args=["-i"],
+                cols=120,
+                rows=30,
+            )
+
+            # Send input to the running command
+            await handle.send_input("print('Hello from TTY!')\\n")
+            await handle.send_input("exit()\\n")
+
+            # Wait for completion
+            result = await handle.wait()
+            print(f"Exited with code: {result.exit_code}")
+
+            # Clean up
+            await handle.disconnect()
+            ```
+        """
+        # Serialize a known endpoint to extract the base URL and auth headers
+        _, ref_url, headers, *_ = self._api_client._list_sessions_serialize(
+            _request_auth=None,
+            _content_type=None,
+            _headers=None,
+            _host_index=None,
+        )
+        # ref_url looks like "https://proxy.example.com/sandbox-id/process/session"
+        base_url = re.sub(r"/process/session$", "", ref_url)
+        execute_tty_url = f"{base_url}/process/execute-tty"
+
+        # Build request body omitting None values
+        body = {k: v for k, v in {
+            "command": command,
+            "args": args,
+            "cwd": cwd,
+            "timeout": timeout,
+            "cols": cols,
+            "rows": rows,
+            "envs": envs,
+        }.items() if v is not None}
+
+        # Create the TTY session via HTTP
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                execute_tty_url,
+                json=body,
+                headers={**headers, "Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            session_id: str = response.json()["sessionId"]
+
+        # Connect via WebSocket
+        ws_url = re.sub(r"^http", "ws", f"{base_url}/process/execute-tty/{session_id}")
+        ws = await connect(ws_url, additional_headers=headers)
+
+        async def resize_handler(pty_size: PtySize) -> PtySessionInfo:
+            resize_url = f"{base_url}/process/execute-tty/{session_id}/resize"
+            async with httpx.AsyncClient() as _client:
+                await _client.post(
+                    resize_url,
+                    json={"cols": pty_size.cols, "rows": pty_size.rows},
+                    headers={**headers, "Content-Type": "application/json"},
+                )
+            return PtySessionInfo.model_construct()
+
+        handle = AsyncPtyHandle(
+            ws,
+            session_id=session_id,
+            handle_resize=resize_handler,
+        )
+        await handle.wait_for_connection()
+        return handle
