@@ -56,6 +56,9 @@ func TestExecuteTTY_ValidRequest(t *testing.T) {
 	// Clean up the TTY session created during the test to avoid resource leaks.
 	t.Cleanup(func() {
 		if response.SessionID != "" {
+			if s, ok := ttyExecSessions.Load(response.SessionID); ok {
+				s.(*TTYExecSession).cancel()
+			}
 			ttyExecSessions.Delete(response.SessionID)
 		}
 	})
@@ -149,6 +152,9 @@ func TestExecuteTTY_DefaultDimensions(t *testing.T) {
 	// Clean up the TTY session created during the test to avoid resource leaks.
 	t.Cleanup(func() {
 		if response.SessionID != "" {
+			if s, ok := ttyExecSessions.Load(response.SessionID); ok {
+				s.(*TTYExecSession).cancel()
+			}
 			ttyExecSessions.Delete(response.SessionID)
 		}
 	})

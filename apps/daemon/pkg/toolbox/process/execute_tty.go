@@ -52,9 +52,16 @@ type TTYExecSession struct {
 
 // ttyWSClient represents a WebSocket client connection for TTY exec
 type ttyWSClient struct {
-	id   string
-	conn *websocket.Conn
-	send chan []byte
+	id        string
+	conn      *websocket.Conn
+	send      chan []byte
+	closeOnce sync.Once
+}
+
+// close closes the underlying WebSocket connection exactly once, guarding against
+// concurrent close calls from handleWebSocketReads and closeClientsWithExitCode.
+func (c *ttyWSClient) close() {
+	c.closeOnce.Do(func() { c.conn.Close() })
 }
 
 var ttyExecSessions = &sync.Map{} // sessionID -> *TTYExecSession
@@ -268,8 +275,9 @@ func (s *TTYExecSession) start() error {
 
 		s.closeClientsWithExitCode(exitCode, exitReason)
 
-		// Clean up session
+		// Clean up session and unblock any remaining goroutines waiting on ctx.
 		ttyExecSessions.Delete(s.sessionID)
+		s.cancel()
 		s.logger.Debug("TTY exec session exited", "exitCode", exitCode, "exitReason", exitReason)
 	}()
 
@@ -278,7 +286,7 @@ func (s *TTYExecSession) start() error {
 
 // attachWebSocket adds a WebSocket client and starts handling messages
 func (s *TTYExecSession) attachWebSocket(conn *websocket.Conn) {
-	clientID := fmt.Sprintf("client-%d", time.Now().UnixNano())
+	clientID := fmt.Sprintf("client-%s", uuid.New().String())
 	client := &ttyWSClient{
 		id:   clientID,
 		conn: conn,
@@ -334,7 +342,7 @@ func (s *TTYExecSession) handleWebSocketReads(client *ttyWSClient) {
 		s.clientsMu.Lock()
 		delete(s.clients, client.id)
 		s.clientsMu.Unlock()
-		_ = client.conn.Close()
+		client.close()
 	}()
 
 	client.conn.SetReadDeadline(time.Now().Add(time.Hour * 24))
@@ -360,6 +368,11 @@ func (s *TTYExecSession) handleWebSocketReads(client *ttyWSClient) {
 
 // handleWebSocketWrites reads from PTY output and sends to WebSocket
 func (s *TTYExecSession) handleWebSocketWrites(client *ttyWSClient) {
+	defer func() {
+		s.clientsMu.Lock()
+		delete(s.clients, client.id)
+		s.clientsMu.Unlock()
+	}()
 	for {
 		select {
 		case data := <-client.send:
@@ -461,7 +474,7 @@ func (s *TTYExecSession) closeClientsWithExitCode(exitCode int, exitReason strin
 			client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			_ = client.conn.WriteMessage(websocket.TextMessage, b)
 		}
-		_ = client.conn.Close()
+		client.close()
 	}
 }
 

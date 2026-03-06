@@ -7,6 +7,7 @@ package toolbox
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,7 +18,7 @@ import (
 // setupResizeHandler installs a SIGWINCH handler that forwards terminal resize
 // events to the remote TTY session. Returns a cleanup function that stops
 // signal handling.
-func setupResizeHandler(ctx context.Context, proxyURL, sandboxId, sessionID string, c *Client) func() {
+func setupResizeHandler(ctx context.Context, proxyURL, sandboxId, sessionID string, c *Client, auth http.Header) func() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGWINCH)
 
@@ -25,7 +26,7 @@ func setupResizeHandler(ctx context.Context, proxyURL, sandboxId, sessionID stri
 		for range sigChan {
 			cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 			if err == nil {
-				c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows))
+				c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows), auth)
 			}
 		}
 	}()

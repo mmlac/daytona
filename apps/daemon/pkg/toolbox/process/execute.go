@@ -45,9 +45,10 @@ func ExecuteCommand(logger *slog.Logger) gin.HandlerFunc {
 			cmd.Dir = *request.Cwd
 		}
 
-		// Note: TTY support is recognized but requires WebSocket-based interaction via PTY endpoints
+		// TTY mode is not supported on this endpoint; clients must use /process/execute-tty.
 		if request.TTY != nil && *request.TTY {
-			logger.Debug("TTY requested for command", "command", cmdParts[0])
+			c.JSON(http.StatusBadRequest, gin.H{"error": "TTY=true is not supported on this endpoint; use /process/execute-tty instead"})
+			return
 		}
 
 		// set maximum execution time
