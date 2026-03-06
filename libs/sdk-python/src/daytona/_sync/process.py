@@ -763,15 +763,10 @@ class Process:
             handle.disconnect()
             ```
         """
-        # Serialize a known endpoint to extract the base URL and auth headers
-        _, ref_url, headers, *_ = self._api_client._list_sessions_serialize(
-            _request_auth=None,
-            _content_type=None,
-            _headers=None,
-            _host_index=None,
-        )
-        # ref_url looks like "https://proxy.example.com/sandbox-id/process/session"
-        base_url = re.sub(r"/process/session$", "", ref_url)
+        # Derive the base URL and auth headers directly from the API client's
+        # configuration, avoiding reliance on internal generated-client methods.
+        base_url = self._api_client.api_client.configuration.host.rstrip("/")
+        headers = dict(self._api_client.api_client.default_headers)
         execute_tty_url = f"{base_url}/process/execute-tty"
 
         # Build request body omitting None values

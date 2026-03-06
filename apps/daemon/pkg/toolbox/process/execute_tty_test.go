@@ -51,7 +51,14 @@ func TestExecuteTTY_ValidRequest(t *testing.T) {
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, response.SessionID)
-	assert.Contains(t, response.SessionID, "ttyhexec-")
+	assert.Contains(t, response.SessionID, "ttyexec-")
+
+	// Clean up the TTY session created during the test to avoid resource leaks.
+	t.Cleanup(func() {
+		if response.SessionID != "" {
+			ttyExecSessions.Delete(response.SessionID)
+		}
+	})
 }
 
 func TestExecuteTTY_MissingCommand(t *testing.T) {
@@ -138,6 +145,13 @@ func TestExecuteTTY_DefaultDimensions(t *testing.T) {
 	err = json.Unmarshal(w.Body.Bytes(), &response)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, response.SessionID)
+
+	// Clean up the TTY session created during the test to avoid resource leaks.
+	t.Cleanup(func() {
+		if response.SessionID != "" {
+			ttyExecSessions.Delete(response.SessionID)
+		}
+	})
 }
 
 func TestConnectExecuteTTY_SessionNotFound(t *testing.T) {
