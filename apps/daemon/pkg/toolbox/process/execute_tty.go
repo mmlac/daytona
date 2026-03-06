@@ -56,12 +56,22 @@ type ttyWSClient struct {
 	conn      *websocket.Conn
 	send      chan []byte
 	closeOnce sync.Once
+	writeMu   sync.Mutex // guards all WriteMessage calls on conn
 }
 
 // close closes the underlying WebSocket connection exactly once, guarding against
 // concurrent close calls from handleWebSocketReads and closeClientsWithExitCode.
 func (c *ttyWSClient) close() {
 	c.closeOnce.Do(func() { c.conn.Close() })
+}
+
+// writeMessage sends a WebSocket message while holding the per-client write lock,
+// preventing concurrent writes from handleWebSocketWrites and closeClientsWithExitCode.
+func (c *ttyWSClient) writeMessage(msgType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return c.conn.WriteMessage(msgType, data)
 }
 
 var ttyExecSessions = &sync.Map{} // sessionID -> *TTYExecSession
@@ -372,12 +382,14 @@ func (s *TTYExecSession) handleWebSocketWrites(client *ttyWSClient) {
 		s.clientsMu.Lock()
 		delete(s.clients, client.id)
 		s.clientsMu.Unlock()
+		// Close the connection so that the paired handleWebSocketReads goroutine
+		// gets a read error and can exit promptly, rather than blocking indefinitely.
+		client.close()
 	}()
 	for {
 		select {
 		case data := <-client.send:
-			client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := client.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+			if err := client.writeMessage(websocket.BinaryMessage, data); err != nil {
 				s.logger.Debug("WebSocket write error", "clientId", client.id, "error", err)
 				return
 			}
@@ -471,8 +483,9 @@ func (s *TTYExecSession) closeClientsWithExitCode(exitCode int, exitReason strin
 
 	for _, client := range clients {
 		if b, err := json.Marshal(exitMsg); err == nil {
-			client.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			_ = client.conn.WriteMessage(websocket.TextMessage, b)
+			// writeMessage holds the per-client writeMu, preventing a data race with
+			// the concurrent handleWebSocketWrites goroutine.
+			_ = client.writeMessage(websocket.TextMessage, b)
 		}
 		client.close()
 	}

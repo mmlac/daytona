@@ -149,6 +149,59 @@ func TestExecuteTTYRequest_WithValues(t *testing.T) {
 	assert.Equal(t, envs, request.Envs)
 }
 
+// TestParseCommandRoundTrip verifies that strings produced by buildCommand (on the CLI side)
+// are correctly parsed back by parseCommand on the daemon side. This ensures the
+// quoting strategy survives the serialization round-trip.
+func TestParseCommandRoundTrip(t *testing.T) {
+	// buildCommandSimple mirrors the double-quote wrapping logic used by the CLI's
+	// buildCommand for the `-c` flag case.
+	buildCommandSimple := func(shell, flag, script string) string {
+		escaped := ""
+		for i := 0; i < len(script); i++ {
+			if script[i] == '"' {
+				escaped += `\"`
+			} else {
+				escaped += string(script[i])
+			}
+		}
+		return shell + " " + flag + ` "` + escaped + `"`
+	}
+
+	tests := []struct {
+		name     string
+		cmd      string
+		expected []string
+	}{
+		{
+			name:     "sh -c with simple script",
+			cmd:      buildCommandSimple("sh", "-c", "echo hello && echo world"),
+			expected: []string{"sh", "-c", "echo hello && echo world"},
+		},
+		{
+			name:     "sh -c with single quotes in script",
+			cmd:      buildCommandSimple("sh", "-c", "echo 'hello world'"),
+			expected: []string{"sh", "-c", "echo 'hello world'"},
+		},
+		{
+			name:     "sh -c with double quotes in script",
+			cmd:      buildCommandSimple("sh", "-c", `echo "hello"`),
+			expected: []string{"sh", "-c", `echo "hello"`},
+		},
+		{
+			name:     "bash -c with complex script",
+			cmd:      buildCommandSimple("bash", "-c", "python3 -c 'print(1+1)'"),
+			expected: []string{"bash", "-c", "python3 -c 'print(1+1)'"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := parseCommand(tt.cmd)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 // Helper functions
 
 func toUint32Ptr(val uint32) *uint32 {

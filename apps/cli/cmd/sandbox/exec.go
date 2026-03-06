@@ -160,13 +160,16 @@ func buildCommand(args []string) string {
 		return ""
 	}
 
-	// For shell -c commands, wrap the script argument in single quotes so that
+	// For shell -c commands, wrap the script argument in double quotes so that
 	// parseCommand on the daemon reconstructs a 3-element slice: [shell, "-c", script].
+	// Internal double quotes are escaped as \" (parseCommand handles this escape).
+	// This also correctly handles scripts that contain single quotes.
 	if len(args) >= 3 && args[1] == "-c" {
 		parts := []string{args[0], args[1]}
-		// Join any extra args (args[2:]) as the script; wrap in single quotes.
+		// Join any extra args (args[2:]) as the script; wrap in double quotes.
 		cmdPart := strings.Join(args[2:], " ")
-		return strings.Join(append(parts, "'"+cmdPart+"'"), " ")
+		escaped := strings.ReplaceAll(cmdPart, `"`, `\"`)
+		return strings.Join(append(parts, `"`+escaped+`"`), " ")
 	}
 
 	// For regular commands, quote arguments that contain whitespace so that

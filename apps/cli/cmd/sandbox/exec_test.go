@@ -10,6 +10,85 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestBuildCommand directly tests the buildCommand function with various quoting scenarios.
+func TestBuildCommand(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     []string
+		expected string
+	}{
+		{
+			name:     "empty args",
+			args:     []string{},
+			expected: "",
+		},
+		{
+			name:     "simple command no args",
+			args:     []string{"echo"},
+			expected: "echo",
+		},
+		{
+			name:     "simple command with arg",
+			args:     []string{"echo", "hello"},
+			expected: "echo hello",
+		},
+		{
+			name:     "multiple args without spaces",
+			args:     []string{"ls", "-la", "/tmp"},
+			expected: "ls -la /tmp",
+		},
+		{
+			name:     "arg with spaces uses single quotes",
+			args:     []string{"echo", "hello world"},
+			expected: "echo 'hello world'",
+		},
+		{
+			// Arg contains a space AND a single quote → falls back to double-quote wrapping.
+			name:     "arg with space and single quote falls back to double quotes",
+			args:     []string{"echo", "it's fine"},
+			expected: `echo "it's fine"`,
+		},
+		{
+			// Arg contains a space and a double quote but NO single quote → single-quote wrap.
+			name:     "arg with space and double quote uses single quotes",
+			args:     []string{"echo", `say "hi"`},
+			expected: `echo 'say "hi"'`,
+		},
+		{
+			// Script without single quotes: double-quote wrapping.
+			name:     "shell -c without special chars in script",
+			args:     []string{"sh", "-c", "echo hello && echo world"},
+			expected: `sh -c "echo hello && echo world"`,
+		},
+		{
+			// Script WITH single quotes must still round-trip correctly.
+			// Old single-quote wrapping would break here; double-quote wrapping handles it.
+			name:     "shell -c with single quotes in script",
+			args:     []string{"sh", "-c", "echo 'hello world'"},
+			expected: `sh -c "echo 'hello world'"`,
+		},
+		{
+			// Script with double quotes: internal " is escaped as \".
+			name:     "shell -c with double quotes in script",
+			args:     []string{"sh", "-c", `echo "hello"`},
+			expected: `sh -c "echo \"hello\""`,
+		},
+		{
+			// bash -c variant with both single and double quotes
+			name:     "bash -c command with single quotes",
+			args:     []string{"bash", "-c", "python3 -c 'print(1+1)'"},
+			expected: `bash -c "python3 -c 'print(1+1)'"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := buildCommand(tt.args)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestCommandConstruction(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -50,6 +129,7 @@ func TestCommandConstruction(t *testing.T) {
 		})
 	}
 }
+
 
 func TestExecFlagBehavior(t *testing.T) {
 	tests := []struct {

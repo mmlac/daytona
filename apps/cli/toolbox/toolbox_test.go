@@ -119,3 +119,104 @@ func TestExecuteTTYRequestDefaults(t *testing.T) {
 	assert.Nil(t, request.Cwd)
 	assert.Nil(t, request.Envs)
 }
+func TestIsControlMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected bool
+	}{
+		{
+			name:     "valid control message",
+			input:    []byte(`{"type":"control","status":"connected"}`),
+			expected: true,
+		},
+		{
+			name:     "exit control message",
+			input:    []byte(`{"type":"control","status":"exited","exitCode":0}`),
+			expected: true,
+		},
+		{
+			name:     "non-control type",
+			input:    []byte(`{"type":"data","payload":"hello"}`),
+			expected: false,
+		},
+		{
+			name:     "invalid JSON",
+			input:    []byte(`not json`),
+			expected: false,
+		},
+		{
+			name:     "JSON object without type=control",
+			input:    []byte(`{"looks":"like json but isn't control"}`),
+			expected: false,
+		},
+		{
+			name:     "empty input",
+			input:    []byte{},
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isControlMessage(tt.input)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+func TestParseControlMessage(t *testing.T) {
+	tests := []struct {
+		name           string
+		input          []byte
+		expectedCode   int
+		expectedIsExit bool
+	}{
+		{
+			name:           "clean exit code 0",
+			input:          []byte(`{"type":"control","status":"exited","exitCode":0}`),
+			expectedCode:   0,
+			expectedIsExit: true,
+		},
+		{
+			name:           "non-zero exit code",
+			input:          []byte(`{"type":"control","status":"exited","exitCode":1}`),
+			expectedCode:   1,
+			expectedIsExit: true,
+		},
+		{
+			name:           "large exit code SIGKILL",
+			input:          []byte(`{"type":"control","status":"exited","exitCode":137}`),
+			expectedCode:   137,
+			expectedIsExit: true,
+		},
+		{
+			name:           "connected status is not exit",
+			input:          []byte(`{"type":"control","status":"connected"}`),
+			expectedCode:   0,
+			expectedIsExit: false,
+		},
+		{
+			name:           "missing exitCode defaults to 0",
+			input:          []byte(`{"type":"control","status":"exited"}`),
+			expectedCode:   0,
+			expectedIsExit: true,
+		},
+		{
+			name:           "invalid JSON returns false",
+			input:          []byte(`not json`),
+			expectedCode:   0,
+			expectedIsExit: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			code, isExit := parseControlMessage(tt.input)
+			assert.Equal(t, tt.expectedIsExit, isExit)
+			if tt.expectedIsExit {
+				assert.Equal(t, tt.expectedCode, code)
+			}
+		})
+	}
+}

@@ -295,7 +295,10 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 	// - SIGTERM: close the WebSocket to request session cleanup.
 	intChan := make(chan os.Signal, 1)
 	signal.Notify(intChan, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(intChan)
+	defer func() {
+		signal.Stop(intChan)
+		close(intChan) // unblock the signal handler goroutine so it can exit
+	}()
 	go func() {
 		if sig, ok := <-intChan; ok {
 			switch sig {
