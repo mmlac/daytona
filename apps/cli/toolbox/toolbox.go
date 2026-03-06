@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -294,31 +293,30 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 	}
 	c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows))
 
-	// Handle terminal resizing
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGWINCH)
-	defer signal.Stop(sigChan)
+	// Handle terminal resizing (platform-specific: SIGWINCH on Unix, no-op on Windows)
+	stopResizeHandler := setupResizeHandler(ctx, proxyURL, sandboxId, sessionID, c)
+	defer stopResizeHandler()
 
-	done := make(chan error, 1)
+	done := make(chan error, 2)
 
-	// Handle terminal resize
-	go func() {
-		for range sigChan {
-			cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
-			if err == nil {
-				c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows))
-			}
-		}
-	}()
-
-	// Handle Ctrl+C: forward SIGINT to remote process by closing the WebSocket,
-	// which causes the daemon to clean up and send an exit control message.
+	// Handle termination signals.
+	// - SIGINT: send an interrupt byte (0x03) over the TTY stream so the
+	//   remote process receives a normal SIGINT without tearing down the session.
+	// - SIGTERM: close the WebSocket to request session cleanup.
 	intChan := make(chan os.Signal, 1)
 	signal.Notify(intChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(intChan)
 	go func() {
-		if _, ok := <-intChan; ok {
-			ws.Close()
+		if sig, ok := <-intChan; ok {
+			switch sig {
+			case syscall.SIGINT:
+				// Send Ctrl+C as a TTY interrupt byte to the remote process.
+				ws.SetWriteDeadline(time.Now().Add(10 * time.Second))
+				_ = ws.WriteMessage(websocket.BinaryMessage, []byte{3})
+			case syscall.SIGTERM:
+				// Graceful termination: close the WebSocket and let the daemon clean up.
+				_ = ws.Close()
+			}
 		}
 	}()
 
@@ -426,14 +424,6 @@ func (c *Client) resizeTTYSession(ctx context.Context, proxyURL, sandboxId, sess
 }
 
 // Helper functions
-
-func getHost(baseURL string) string {
-	u, err := url.Parse(baseURL)
-	if err != nil {
-		return baseURL
-	}
-	return u.Host
-}
 
 func isControlMessage(data []byte) bool {
 	var msg map[string]interface{}

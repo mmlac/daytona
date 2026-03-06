@@ -19,6 +19,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/daytonaio/daemon/internal/util"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 )
 
@@ -51,10 +52,9 @@ type TTYExecSession struct {
 
 // ttyWSClient represents a WebSocket client connection for TTY exec
 type ttyWSClient struct {
-	id        string
-	conn      *websocket.Conn
-	send      chan []byte
-	closeOnce sync.Once
+	id   string
+	conn *websocket.Conn
+	send chan []byte
 }
 
 var ttyExecSessions = &sync.Map{} // sessionID -> *TTYExecSession
@@ -103,7 +103,7 @@ func ExecuteTTY(logger *slog.Logger) gin.HandlerFunc {
 		}
 
 		// Generate a session ID
-		sessionID := fmt.Sprintf("ttyhexec-%d", time.Now().UnixNano())
+		sessionID := fmt.Sprintf("ttyexec-%s", uuid.New().String())
 
 		// Create and start the TTY session
 		session := &TTYExecSession{
@@ -170,7 +170,17 @@ func (s *TTYExecSession) start() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+
+	// If a positive timeout is provided, enforce it; otherwise wait indefinitely.
+	if s.request.Timeout != nil && *s.request.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(*s.request.Timeout)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	s.ctx = ctx
 	s.cancel = cancel
 
@@ -280,17 +290,19 @@ func (s *TTYExecSession) attachWebSocket(conn *websocket.Conn) {
 	s.clientsMu.Unlock()
 
 	// Send control message
-	s.mu.Lock()
+	s.finishedMu.Lock()
 	finished := s.finished
-	s.mu.Unlock()
+	exitCode := s.exitCode
+	exitReason := s.exitReason
+	s.finishedMu.Unlock()
 
 	if finished {
 		// Send exit code immediately
 		exitMsg := map[string]interface{}{
 			"type":     "control",
 			"status":   "exited",
-			"exitCode": s.exitCode,
-			"reason":   s.exitReason,
+			"exitCode": exitCode,
+			"reason":   exitReason,
 		}
 		if b, err := json.Marshal(exitMsg); err == nil {
 			_ = conn.WriteMessage(websocket.TextMessage, b)
@@ -380,16 +392,23 @@ func (s *TTYExecSession) ptyReadLoop() {
 			// Copy data before broadcasting — buffer is reused on the next iteration
 			data := make([]byte, n)
 			copy(data, buffer[:n])
+
+			// Copy current clients under read lock, then release the lock before
+			// performing potentially blocking sends (avoids holding the lock during sends).
 			s.clientsMu.RLock()
+			clients := make([]*ttyWSClient, 0, len(s.clients))
 			for _, client := range s.clients {
+				clients = append(clients, client)
+			}
+			s.clientsMu.RUnlock()
+
+			for _, client := range clients {
 				select {
 				case client.send <- data:
 				case <-s.ctx.Done():
-					s.clientsMu.RUnlock()
 					return
 				}
 			}
-			s.clientsMu.RUnlock()
 		}
 	}
 }

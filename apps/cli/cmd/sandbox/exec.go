@@ -151,25 +151,41 @@ var (
 	execTimeout int
 )
 
-// buildCommand reconstructs the command with proper shell escaping
-// For args like ["sh", "-c", "python3 '...'"], it will properly quote them
+// buildCommand reconstructs the command string from args with proper quoting.
+// For args like ["sh", "-c", "python3 '...'"], it preserves the shell command intact.
+// For regular commands, arguments that contain spaces are quoted so that parseCommand
+// on the daemon side re-splits them correctly.
 func buildCommand(args []string) string {
 	if len(args) == 0 {
 		return ""
 	}
 
-	// Build command string for execution
-	// If the second argument is "-c" (shell command), we need to preserve quoting
+	// For shell -c commands, wrap the script argument in single quotes so that
+	// parseCommand on the daemon reconstructs a 3-element slice: [shell, "-c", script].
 	if len(args) >= 3 && args[1] == "-c" {
-		// For shell -c commands, we build: sh -c "command"
 		parts := []string{args[0], args[1]}
-		// Join the remaining args (the actual command) as-is
+		// Join any extra args (args[2:]) as the script; wrap in single quotes.
 		cmdPart := strings.Join(args[2:], " ")
-		return strings.Join(append(parts, cmdPart), " ")
+		return strings.Join(append(parts, "'"+cmdPart+"'"), " ")
 	}
 
-	// For regular commands, join all args with spaces
-	return strings.Join(args, " ")
+	// For regular commands, quote arguments that contain whitespace so that
+	// parseCommand re-splits them correctly.
+	quotedArgs := make([]string, len(args))
+	for i, arg := range args {
+		if strings.ContainsAny(arg, " \t") {
+			if !strings.Contains(arg, "'") {
+				quotedArgs[i] = "'" + arg + "'"
+			} else {
+				// Fall back to double-quote wrapping; single quotes inside are literal
+				// within double-quoted strings as far as parseCommand is concerned.
+				quotedArgs[i] = `"` + arg + `"`
+			}
+		} else {
+			quotedArgs[i] = arg
+		}
+	}
+	return strings.Join(quotedArgs, " ")
 }
 
 func init() {
