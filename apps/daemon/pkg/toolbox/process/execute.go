@@ -34,6 +34,13 @@ func ExecuteCommand(logger *slog.Logger) gin.HandlerFunc {
 			return
 		}
 
+		// TTY mode is not supported on this endpoint; clients must use /process/execute-tty.
+		// Reject early before doing any work.
+		if request.TTY != nil && *request.TTY {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "TTY=true is not supported on this endpoint; use /process/execute-tty instead"})
+			return
+		}
+
 		cmdParts := parseCommand(request.Command)
 		if len(cmdParts) == 0 {
 			c.AbortWithError(http.StatusBadRequest, errors.New("empty command"))
@@ -43,12 +50,6 @@ func ExecuteCommand(logger *slog.Logger) gin.HandlerFunc {
 		cmd := exec.Command(cmdParts[0], cmdParts[1:]...)
 		if request.Cwd != nil {
 			cmd.Dir = *request.Cwd
-		}
-
-		// TTY mode is not supported on this endpoint; clients must use /process/execute-tty.
-		if request.TTY != nil && *request.TTY {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "TTY=true is not supported on this endpoint; use /process/execute-tty instead"})
-			return
 		}
 
 		// set maximum execution time
@@ -108,15 +109,26 @@ func ExecuteCommand(logger *slog.Logger) gin.HandlerFunc {
 	}
 }
 
-// parseCommand splits a command string properly handling quotes
+// parseCommand splits a command string properly handling quotes.
+// Within double-quoted strings, `\"` is treated as a literal double-quote
+// character; this is the only backslash sequence handled. All other backslashes
+// are written through as-is. This allows arguments produced by buildCommand
+// (which escapes internal `"` as `\"`) to round-trip correctly.
 func parseCommand(command string) []string {
 	var args []string
 	var current bytes.Buffer
 	var inQuotes bool
 	var quoteChar rune
 
-	for _, r := range command {
+	runes := []rune(command)
+	i := 0
+	for i < len(runes) {
+		r := runes[i]
 		switch {
+		case r == '\\' && inQuotes && quoteChar == '"' && i+1 < len(runes) && runes[i+1] == '"':
+			// \" inside a double-quoted string: emit a literal double-quote and skip the next char.
+			i++
+			current.WriteRune('"')
 		case r == '"' || r == '\'':
 			if !inQuotes {
 				inQuotes = true
@@ -135,6 +147,7 @@ func parseCommand(command string) []string {
 		default:
 			current.WriteRune(r)
 		}
+		i++
 	}
 
 	if current.Len() > 0 {
