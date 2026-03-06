@@ -177,9 +177,9 @@ func buildCommand(args []string) string {
 			if !strings.Contains(arg, "'") {
 				quotedArgs[i] = "'" + arg + "'"
 			} else {
-				// Fall back to double-quote wrapping; single quotes inside are literal
-				// within double-quoted strings as far as parseCommand is concerned.
-				quotedArgs[i] = `"` + arg + `"`
+				// Fall back to double-quote wrapping, escaping any internal double quotes.
+				escaped := strings.ReplaceAll(arg, `"`, `\"`)
+				quotedArgs[i] = `"` + escaped + `"`
 			}
 		} else {
 			quotedArgs[i] = arg

@@ -41,6 +41,11 @@ func TestParseCommand(t *testing.T) {
 			expected: []string{"sh", "-c", "echo 'hello'"},
 		},
 		{
+			name:     "backslash-escaped double-quote inside double-quoted string",
+			input:    `echo "He said \"hello\""`,
+			expected: []string{"echo", `He said "hello"`},
+		},
+		{
 			name:     "empty string",
 			input:    "",
 			expected: nil, // parseCommand returns nil for empty input

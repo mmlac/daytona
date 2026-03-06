@@ -43,7 +43,9 @@ export interface TtyExecOptions {
   envs?: Record<string, string>
 
   /**
-   * Callback to handle terminal output data
+   * Callback to handle terminal output data. If omitted, output is silently
+   * discarded (useful for headless / CI use cases that only care about the
+   * exit code).
    */
-  onData: (data: Uint8Array) => void | Promise<void>
+  onData?: (data: Uint8Array) => void | Promise<void>
 }

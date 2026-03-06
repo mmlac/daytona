@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -88,6 +89,35 @@ func (c *Client) getProxyURL(ctx context.Context, sandboxId, region string) (str
 	return toolboxProxyUrl.Url, nil
 }
 
+// defaultHTTPTimeout is used for all outbound HTTP requests to the daemon.
+const defaultHTTPTimeout = 30 * time.Second
+
+// getAuthHeaders reads the active profile from config once and returns the
+// corresponding HTTP headers (Authorization + optional Org ID). Callers should
+// call this once per user-facing operation and pass the resulting headers down
+// to avoid redundant config file reads.
+func getAuthHeaders() (http.Header, error) {
+	cfg, err := config.GetConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get config: %w", err)
+	}
+	activeProfile, err := cfg.GetActiveProfile()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active profile: %w", err)
+	}
+
+	h := http.Header{}
+	if activeProfile.Api.Key != nil {
+		h.Set("Authorization", "Bearer "+*activeProfile.Api.Key)
+	} else if activeProfile.Api.Token != nil {
+		h.Set("Authorization", "Bearer "+activeProfile.Api.Token.AccessToken)
+	}
+	if activeProfile.ActiveOrganizationId != nil {
+		h.Set("X-Daytona-Organization-ID", *activeProfile.ActiveOrganizationId)
+	}
+	return h, nil
+}
+
 func (c *Client) ExecuteCommand(ctx context.Context, sandbox *apiclient.Sandbox, request ExecuteRequest) (*ExecuteResponse, error) {
 	proxyURL, err := c.getProxyURL(ctx, sandbox.Id, sandbox.Target)
 	if err != nil {
@@ -114,27 +144,15 @@ func (c *Client) executeCommandViaProxy(ctx context.Context, proxyURL, sandboxId
 
 	req.Header.Set("Content-Type", "application/json")
 
-	cfg, err := config.GetConfig()
+	auth, err := getAuthHeaders()
 	if err != nil {
 		return nil, err
 	}
-
-	activeProfile, err := cfg.GetActiveProfile()
-	if err != nil {
-		return nil, err
+	for k, v := range auth {
+		req.Header[k] = v
 	}
 
-	if activeProfile.Api.Key != nil {
-		req.Header.Set("Authorization", "Bearer "+*activeProfile.Api.Key)
-	} else if activeProfile.Api.Token != nil {
-		req.Header.Set("Authorization", "Bearer "+activeProfile.Api.Token.AccessToken)
-	}
-
-	if activeProfile.ActiveOrganizationId != nil {
-		req.Header.Set("X-Daytona-Organization-ID", *activeProfile.ActiveOrganizationId)
-	}
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -165,18 +183,24 @@ func (c *Client) ExecuteCommandTTY(ctx context.Context, sandbox *apiclient.Sandb
 		return err
 	}
 
+	// Load auth headers once and reuse across all sub-calls.
+	auth, err := getAuthHeaders()
+	if err != nil {
+		return err
+	}
+
 	// Create TTY session
-	sessionID, err := c.createTTYSession(ctx, proxyURL, sandbox.Id, request)
+	sessionID, err := c.createTTYSession(ctx, proxyURL, sandbox.Id, request, auth)
 	if err != nil {
 		return err
 	}
 
 	// Connect to the session as an interactive terminal
-	return c.connectAndStreamTTY(ctx, proxyURL, sandbox.Id, sessionID)
+	return c.connectAndStreamTTY(ctx, proxyURL, sandbox.Id, sessionID, auth)
 }
 
 // createTTYSession creates a new TTY execution session
-func (c *Client) createTTYSession(ctx context.Context, proxyURL, sandboxId string, request ExecuteTTYRequest) (string, error) {
+func (c *Client) createTTYSession(ctx context.Context, proxyURL, sandboxId string, request ExecuteTTYRequest, auth http.Header) (string, error) {
 	url := fmt.Sprintf("%s/%s/process/execute-tty", strings.TrimSuffix(proxyURL, "/"), sandboxId)
 
 	body, err := json.Marshal(request)
@@ -190,28 +214,11 @@ func (c *Client) createTTYSession(ctx context.Context, proxyURL, sandboxId strin
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return "", err
+	for k, v := range auth {
+		req.Header[k] = v
 	}
 
-	activeProfile, err := cfg.GetActiveProfile()
-	if err != nil {
-		return "", err
-	}
-
-	if activeProfile.Api.Key != nil {
-		req.Header.Set("Authorization", "Bearer "+*activeProfile.Api.Key)
-	} else if activeProfile.Api.Token != nil {
-		req.Header.Set("Authorization", "Bearer "+activeProfile.Api.Token.AccessToken)
-	}
-
-	if activeProfile.ActiveOrganizationId != nil {
-		req.Header.Set("X-Daytona-Organization-ID", *activeProfile.ActiveOrganizationId)
-	}
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to create TTY session: %w", err)
@@ -236,7 +243,7 @@ func (c *Client) createTTYSession(ctx context.Context, proxyURL, sandboxId strin
 }
 
 // connectAndStreamTTY connects to a TTY session via WebSocket and streams stdin/stdout/stderr
-func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, sessionID string) error {
+func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, sessionID string, auth http.Header) error {
 	baseURL := strings.TrimSuffix(proxyURL, "/")
 	// Convert http(s) URL to ws(s) URL
 	wsProto := "ws"
@@ -250,29 +257,9 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 
 	wsURL := fmt.Sprintf("%s://%s/%s/process/execute-tty/%s", wsProto, baseURL, sandboxId, sessionID)
 
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return err
-	}
-
-	activeProfile, err := cfg.GetActiveProfile()
-	if err != nil {
-		return err
-	}
-
 	// Dial WebSocket
-	header := http.Header{}
-	if activeProfile.Api.Key != nil {
-		header.Set("Authorization", "Bearer "+*activeProfile.Api.Key)
-	} else if activeProfile.Api.Token != nil {
-		header.Set("Authorization", "Bearer "+activeProfile.Api.Token.AccessToken)
-	}
-	if activeProfile.ActiveOrganizationId != nil {
-		header.Set("X-Daytona-Organization-ID", *activeProfile.ActiveOrganizationId)
-	}
-
 	dialer := websocket.Dialer{}
-	ws, _, err := dialer.DialContext(ctx, wsURL, header)
+	ws, _, err := dialer.DialContext(ctx, wsURL, auth)
 	if err != nil {
 		return fmt.Errorf("failed to connect to TTY session: %w", err)
 	}
@@ -291,10 +278,13 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 		cols = 80
 		rows = 24
 	}
-	c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows))
+	if err := c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows), auth); err != nil {
+		// Non-fatal: initial resize failure means the PTY may start with wrong dimensions.
+		slog.Debug("initial TTY resize failed", "error", err)
+	}
 
 	// Handle terminal resizing (platform-specific: SIGWINCH on Unix, no-op on Windows)
-	stopResizeHandler := setupResizeHandler(ctx, proxyURL, sandboxId, sessionID, c)
+	stopResizeHandler := setupResizeHandler(ctx, proxyURL, sandboxId, sessionID, c, auth)
 	defer stopResizeHandler()
 
 	done := make(chan error, 2)
@@ -344,15 +334,17 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 	// Read from WebSocket and write to stdout
 	go func() {
 		for {
-			_, data, err := ws.ReadMessage()
+			msgType, data, err := ws.ReadMessage()
 			if err != nil {
 				// Normal close (e.g. process exited and server closed connection)
 				done <- nil
 				return
 			}
 
-			// Control messages are JSON metadata, not terminal output
-			if isControlMessage(data) {
+			// Control messages are JSON metadata, not terminal output.
+			// Only inspect TextMessage frames to avoid misidentifying binary PTY
+			// output that happens to start with a '{' as a control message.
+			if msgType == websocket.TextMessage && isControlMessage(data) {
 				exitCode, isExit := parseControlMessage(data)
 				if isExit {
 					// Signal done with the exit code; terminal restore happens via defer
@@ -377,7 +369,7 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 }
 
 // resizeTTYSession sends a resize request to the TTY session
-func (c *Client) resizeTTYSession(ctx context.Context, proxyURL, sandboxId, sessionID string, cols, rows uint16) error {
+func (c *Client) resizeTTYSession(ctx context.Context, proxyURL, sandboxId, sessionID string, cols, rows uint16, auth http.Header) error {
 	url := fmt.Sprintf("%s/%s/process/execute-tty/%s/resize", strings.TrimSuffix(proxyURL, "/"), sandboxId, sessionID)
 
 	req := map[string]uint16{
@@ -396,24 +388,11 @@ func (c *Client) resizeTTYSession(ctx context.Context, proxyURL, sandboxId, sess
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
-
-	cfg, err := config.GetConfig()
-	if err != nil {
-		return err
+	for k, v := range auth {
+		httpReq.Header[k] = v
 	}
 
-	activeProfile, err := cfg.GetActiveProfile()
-	if err != nil {
-		return err
-	}
-
-	if activeProfile.Api.Key != nil {
-		httpReq.Header.Set("Authorization", "Bearer "+*activeProfile.Api.Key)
-	} else if activeProfile.Api.Token != nil {
-		httpReq.Header.Set("Authorization", "Bearer "+activeProfile.Api.Token.AccessToken)
-	}
-
-	client := &http.Client{}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return err

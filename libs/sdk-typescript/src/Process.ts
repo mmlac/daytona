@@ -741,7 +741,7 @@ export class Process {
       async () => {
         // No dedicated kill endpoint for execute-tty; callers can send Ctrl+C via sendInput
       },
-      options.onData,
+      options.onData ?? (() => {}),
       sessionId,
     )
 
