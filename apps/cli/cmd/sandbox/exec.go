@@ -18,9 +18,9 @@ import (
 )
 
 var ExecCmd = &cobra.Command{
-	Use:   "exec [SANDBOX_ID | SANDBOX_NAME] [-- COMMAND [ARGS...]]",
+	Use:   "exec [SANDBOX_ID | SANDBOX_NAME] [flags] -- COMMAND [ARGS...]",
 	Short: "Execute a command in a sandbox",
-	Long:  "Execute a command in a running sandbox",
+	Long:  "Execute a command in a running sandbox.\n\nFlags must be specified before -- which separates the sandbox identifier from the command to run.",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := context.Background()
