@@ -23,6 +23,16 @@ import (
 	"golang.org/x/term"
 )
 
+// ExitCodeError is returned when the remote TTY process exits with a non-zero exit code.
+// It carries the exit code so callers can propagate it without printing an error message.
+type ExitCodeError struct {
+	Code int
+}
+
+func (e *ExitCodeError) Error() string {
+	return fmt.Sprintf("exit code %d", e.Code)
+}
+
 type ExecuteRequest struct {
 	Command string   `json:"command"`
 	Cwd     *string  `json:"cwd,omitempty"`
@@ -291,12 +301,24 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 
 	done := make(chan error, 1)
 
+	// Handle terminal resize
 	go func() {
 		for range sigChan {
 			cols, rows, err := term.GetSize(int(os.Stdout.Fd()))
 			if err == nil {
 				c.resizeTTYSession(ctx, proxyURL, sandboxId, sessionID, uint16(cols), uint16(rows))
 			}
+		}
+	}()
+
+	// Handle Ctrl+C: forward SIGINT to remote process by closing the WebSocket,
+	// which causes the daemon to clean up and send an exit control message.
+	intChan := make(chan os.Signal, 1)
+	signal.Notify(intChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(intChan)
+	go func() {
+		if _, ok := <-intChan; ok {
+			ws.Close()
 		}
 	}()
 
@@ -326,25 +348,32 @@ func (c *Client) connectAndStreamTTY(ctx context.Context, proxyURL, sandboxId, s
 		for {
 			_, data, err := ws.ReadMessage()
 			if err != nil {
-				if !websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				// Normal close (e.g. process exited and server closed connection)
+				done <- nil
+				return
+			}
+
+			// Control messages are JSON metadata, not terminal output
+			if isControlMessage(data) {
+				exitCode, isExit := parseControlMessage(data)
+				if isExit {
+					// Signal done with the exit code; terminal restore happens via defer
+					if exitCode != 0 {
+						done <- &ExitCodeError{Code: exitCode}
+					} else {
+						done <- nil
+					}
 					return
 				}
-				done <- err
-				return
+				// Non-exit control messages (e.g. "connected") — just continue
+				continue
 			}
 
-			// Check if it's a control message
-			if isControlMessage(data) {
-				handleControlMessage(data)
-				return
-			}
-
-			// Write to stdout
 			os.Stdout.Write(data)
 		}
 	}()
 
-	// Wait for either i/o to fail
+	// Wait for session to end (clean or error)
 	err = <-done
 	return err
 }
@@ -411,18 +440,21 @@ func isControlMessage(data []byte) bool {
 	return json.Unmarshal(data, &msg) == nil && msg["type"] == "control"
 }
 
-func handleControlMessage(data []byte) {
+// parseControlMessage parses a control message and returns (exitCode, isExit).
+func parseControlMessage(data []byte) (int, bool) {
 	var msg map[string]interface{}
 	if err := json.Unmarshal(data, &msg); err != nil {
-		return
+		return 0, false
 	}
 
-	if status, ok := msg["status"].(string); ok {
-		if status == "exited" {
-			if exitCode, ok := msg["exitCode"].(float64); ok {
-				os.Exit(int(exitCode))
-			}
-			os.Exit(0)
-		}
+	status, _ := msg["status"].(string)
+	if status != "exited" {
+		return 0, false
 	}
+
+	exitCode := 0
+	if v, ok := msg["exitCode"].(float64); ok {
+		exitCode = int(v)
+	}
+	return exitCode, true
 }

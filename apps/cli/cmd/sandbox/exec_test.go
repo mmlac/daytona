@@ -60,25 +60,25 @@ func TestExecFlagBehavior(t *testing.T) {
 	}{
 		{
 			name:      "basic exec without flags",
-			args:      []string{"sandbox-id", "--", "echo", "hello"},
+			args:      []string{"--tty=false", "sandbox-id", "echo", "hello"},
 			expectTTY: false,
 			expectCwd: false,
 		},
 		{
 			name:      "exec with --tty flag",
-			args:      []string{"--tty", "sandbox-id", "--", "bash"},
+			args:      []string{"--tty", "sandbox-id", "bash"},
 			expectTTY: true,
 			expectCwd: false,
 		},
 		{
 			name:      "exec with --cwd flag",
-			args:      []string{"--cwd", "/tmp", "sandbox-id", "--", "ls"},
+			args:      []string{"--cwd", "/tmp", "sandbox-id", "ls"},
 			expectTTY: false,
 			expectCwd: true,
 		},
 		{
 			name:      "exec with multiple flags",
-			args:      []string{"--cwd", "/tmp", "--tty", "--timeout", "30", "sandbox-id", "--", "bash"},
+			args:      []string{"--cwd", "/tmp", "--tty", "--timeout", "30", "sandbox-id", "bash"},
 			expectTTY: true,
 			expectCwd: true,
 		},
@@ -86,65 +86,85 @@ func TestExecFlagBehavior(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Verify flag parsing logic
+			// Cobra strips -- before RunE; verify flags are present in the raw CLI args
 			hasTTY := contains(tt.args, "--tty")
 			hasCwd := contains(tt.args, "--cwd")
 
 			assert.Equal(t, tt.expectTTY, hasTTY)
 			assert.Equal(t, tt.expectCwd, hasCwd)
-
-			// Verify that -- separator is present
-			assert.True(t, contains(tt.args, "--"))
 		})
 	}
 }
 
-func TestDashDashSeparator(t *testing.T) {
+// TestArgsLenAtDash simulates how Cobra passes args to RunE after consuming "--".
+// Cobra strips "--" and sets ArgsLenAtDash to the count of args before it.
+func TestArgsLenAtDash(t *testing.T) {
 	tests := []struct {
-		name         string
-		args         []string
-		hasSeparator bool
-		expectCmds   []string
+		name              string
+		argsAfterCobra    []string // what Cobra passes to RunE (-- is stripped)
+		argsLenAtDash     int      // what cmd.ArgsLenAtDash() returns (-1 = no --)
+		expectSandbox     string
+		expectCmds        []string
+		expectErr         bool
 	}{
 		{
-			name:         "with separator",
-			args:         []string{"sandbox-id", "--", "echo", "hello", "world"},
-			hasSeparator: true,
-			expectCmds:   []string{"echo", "hello", "world"},
+			name:           "sandbox and command separated by --",
+			argsAfterCobra: []string{"sandbox-id", "echo", "hello", "world"},
+			argsLenAtDash:  1,
+			expectSandbox:  "sandbox-id",
+			expectCmds:     []string{"echo", "hello", "world"},
 		},
 		{
-			name:         "with separator and flags before",
-			args:         []string{"--tty", "sandbox-id", "--", "bash", "-i"},
-			hasSeparator: true,
-			expectCmds:   []string{"bash", "-i"},
+			name:           "sandbox and multi-arg command",
+			argsAfterCobra: []string{"sandbox-id", "bash", "-i"},
+			argsLenAtDash:  1,
+			expectSandbox:  "sandbox-id",
+			expectCmds:     []string{"bash", "-i"},
 		},
 		{
-			name:         "no separator",
-			args:         []string{"sandbox-id"},
-			hasSeparator: false,
-			expectCmds:   []string{},
+			name:           "no -- separator used",
+			argsAfterCobra: []string{"sandbox-id", "vim"},
+			argsLenAtDash:  -1,
+			expectErr:      true,
+		},
+		{
+			name:           "-- used but no sandbox ID before it",
+			argsAfterCobra: []string{"vim"},
+			argsLenAtDash:  0,
+			expectErr:      true,
+		},
+		{
+			name:           "-- used but no command after it",
+			argsAfterCobra: []string{"sandbox-id"},
+			argsLenAtDash:  1,
+			expectSandbox:  "sandbox-id",
+			expectCmds:     []string{},
+			expectErr:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Find the -- separator
-			dashDashIndex := -1
-			for i, arg := range tt.args {
-				if arg == "--" {
-					dashDashIndex = i
-					break
-				}
+			dashIndex := tt.argsLenAtDash
+
+			if dashIndex == -1 {
+				assert.True(t, tt.expectErr, "should error when no -- used")
+				return
+			}
+			if dashIndex == 0 {
+				assert.True(t, tt.expectErr, "should error when no sandbox ID before --")
+				return
 			}
 
-			if tt.hasSeparator {
-				assert.NotEqual(t, -1, dashDashIndex, "should find -- separator")
-				if dashDashIndex > -1 && dashDashIndex+1 < len(tt.args) {
-					commandArgs := tt.args[dashDashIndex+1:]
-					assert.Equal(t, tt.expectCmds, commandArgs)
-				}
+			sandboxId := tt.argsAfterCobra[0]
+			commandArgs := tt.argsAfterCobra[dashIndex:]
+
+			assert.Equal(t, tt.expectSandbox, sandboxId)
+
+			if tt.expectErr {
+				assert.Empty(t, commandArgs)
 			} else {
-				assert.Equal(t, -1, dashDashIndex, "should not find -- separator")
+				assert.Equal(t, tt.expectCmds, commandArgs)
 			}
 		})
 	}

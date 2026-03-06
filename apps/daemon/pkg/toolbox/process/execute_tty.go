@@ -377,7 +377,9 @@ func (s *TTYExecSession) ptyReadLoop() {
 		}
 
 		if n > 0 {
-			data := buffer[:n]
+			// Copy data before broadcasting — buffer is reused on the next iteration
+			data := make([]byte, n)
+			copy(data, buffer[:n])
 			s.clientsMu.RLock()
 			for _, client := range s.clients {
 				select {

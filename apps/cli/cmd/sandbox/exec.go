@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -29,21 +30,19 @@ var ExecCmd = &cobra.Command{
 			return err
 		}
 
+		// cmd.ArgsLenAtDash() returns the number of args before "--", or -1 if "--" was not used.
+		// Cobra consumes "--" itself, so we cannot search for it in args directly.
+		dashIndex := cmd.ArgsLenAtDash()
+
+		if dashIndex == -1 {
+			return fmt.Errorf("use -- to separate the sandbox from the command: exec SANDBOX -- COMMAND [ARGS...]")
+		}
+		if dashIndex == 0 {
+			return fmt.Errorf("sandbox ID or name is required: exec SANDBOX -- COMMAND [ARGS...]")
+		}
+
 		sandboxIdOrName := args[0]
-
-		// Find the command args after "--"
-		commandArgs := []string{}
-		dashDashIndex := -1
-		for i, arg := range args {
-			if arg == "--" {
-				dashDashIndex = i
-				break
-			}
-		}
-
-		if dashDashIndex > -1 && dashDashIndex+1 < len(args) {
-			commandArgs = args[dashDashIndex+1:]
-		}
+		commandArgs := args[dashIndex:]
 
 		if len(commandArgs) == 0 {
 			return fmt.Errorf("no command specified")
@@ -135,7 +134,15 @@ func executeTTY(ctx context.Context, toolboxClient *toolbox.Client, sandbox *api
 	}
 
 	// Execute the command via TTY
-	return toolboxClient.ExecuteCommandTTY(ctx, sandbox, executeRequest)
+	err := toolboxClient.ExecuteCommandTTY(ctx, sandbox, executeRequest)
+	// If the remote process exited with a non-zero code, propagate it cleanly.
+	// By the time we reach here, connectAndStreamTTY has already returned, so
+	// defer term.Restore has run and the terminal is in its original state.
+	var exitErr *toolbox.ExitCodeError
+	if errors.As(err, &exitErr) {
+		os.Exit(exitErr.Code)
+	}
+	return err
 }
 
 var (
