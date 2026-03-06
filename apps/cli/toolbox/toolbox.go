@@ -89,6 +89,9 @@ func (c *Client) getProxyURL(ctx context.Context, sandboxId, region string) (str
 	return toolboxProxyUrl.Url, nil
 }
 
+// defaultHTTPTimeout is used for all outbound HTTP requests to the daemon.
+const defaultHTTPTimeout = 30 * time.Second
+
 // getAuthHeaders reads the active profile from config once and returns the
 // corresponding HTTP headers (Authorization + optional Org ID). Callers should
 // call this once per user-facing operation and pass the resulting headers down
@@ -96,11 +99,11 @@ func (c *Client) getProxyURL(ctx context.Context, sandboxId, region string) (str
 func getAuthHeaders() (http.Header, error) {
 	cfg, err := config.GetConfig()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get config: %w", err)
 	}
 	activeProfile, err := cfg.GetActiveProfile()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to get active profile: %w", err)
 	}
 
 	h := http.Header{}
@@ -149,7 +152,7 @@ func (c *Client) executeCommandViaProxy(ctx context.Context, proxyURL, sandboxId
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute request: %w", err)
@@ -215,7 +218,7 @@ func (c *Client) createTTYSession(ctx context.Context, proxyURL, sandboxId strin
 		req.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to create TTY session: %w", err)
@@ -389,7 +392,7 @@ func (c *Client) resizeTTYSession(ctx context.Context, proxyURL, sandboxId, sess
 		httpReq.Header[k] = v
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: defaultHTTPTimeout}
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return err
