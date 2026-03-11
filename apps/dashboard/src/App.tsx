@@ -12,6 +12,7 @@ import { NotificationSocketProvider } from '@/providers/NotificationSocketProvid
 import { OrganizationsProvider } from '@/providers/OrganizationsProvider'
 import { SelectedOrganizationProvider } from '@/providers/SelectedOrganizationProvider'
 import { UserOrganizationInvitationsProvider } from '@/providers/UserOrganizationInvitationsProvider'
+import { initPylon } from '@/vendor/pylon'
 import { OrganizationRolePermissionsEnum, OrganizationUserRoleEnum } from '@daytonaio/api-client'
 import { useFeatureFlagEnabled, usePostHog } from 'posthog-js/react'
 import React, { Suspense, useEffect } from 'react'
@@ -33,7 +34,6 @@ import { DAYTONA_DOCS_URL, DAYTONA_SLACK_URL } from './constants/ExternalLinks'
 import { FeatureFlags } from './enums/FeatureFlags'
 import { RoutePath, getRouteSubPath } from './enums/RoutePath'
 import { useConfig } from './hooks/useConfig'
-import { addPylonWidget } from './lib/pylon-widget'
 import AccountSettings from './pages/AccountSettings'
 import AuditLogs from './pages/AuditLogs'
 import Dashboard from './pages/Dashboard'
@@ -55,6 +55,7 @@ import Volumes from './pages/Volumes'
 import Wallet from './pages/Wallet'
 import WebhookEndpointDetails from './pages/WebhookEndpointDetails'
 import Webhooks from './pages/Webhooks'
+import { SandboxDetails } from './components/sandboxes'
 import { ApiProvider } from './providers/ApiProvider'
 import { RegionsProvider } from './providers/RegionsProvider'
 import { SvixProvider } from './providers/SvixProvider'
@@ -91,8 +92,7 @@ function App() {
       })
     }
     if (import.meta.env.PROD && config.pylonAppId && isAuthenticated && user) {
-      addPylonWidget(config.pylonAppId)
-      window.pylon = {
+      initPylon(config.pylonAppId, {
         chat_settings: {
           app_id: config.pylonAppId,
           email: user.profile.email || '',
@@ -100,7 +100,7 @@ function App() {
           avatar_url: user.profile.picture,
           email_hash: user.profile?.email_hash as string | undefined,
         },
-      }
+      })
     }
   }, [isAuthenticated, user, posthog, config.pylonAppId])
 
@@ -162,6 +162,7 @@ function App() {
         <Route index element={<Navigate to={`${getRouteSubPath(RoutePath.SANDBOXES)}${location.search}`} replace />} />
         <Route path={getRouteSubPath(RoutePath.KEYS)} element={<Keys />} />
         <Route path={getRouteSubPath(RoutePath.SANDBOXES)} element={<Sandboxes />} />
+        <Route path={getRouteSubPath(RoutePath.SANDBOX_DETAILS)} element={<SandboxDetails />} />
         <Route path={getRouteSubPath(RoutePath.SNAPSHOTS)} element={<Snapshots />} />
         <Route path={getRouteSubPath(RoutePath.REGISTRIES)} element={<Registries />} />
         <Route

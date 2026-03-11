@@ -58,6 +58,9 @@ type ServerConfig struct {
 	TerminationGracePeriodSeconds        int
 	TerminationCheckIntervalMilliseconds int
 	RecordingService                     *recording.RecordingService
+	OrganizationId                       *string
+	RegionId                             *string
+	EntrypointLogFilePath                string
 }
 
 func NewServer(config ServerConfig) *server {
@@ -71,6 +74,9 @@ func NewServer(config ServerConfig) *server {
 		terminationCheckIntervalMilliseconds: config.TerminationCheckIntervalMilliseconds,
 		configDir:                            config.ConfigDir,
 		recordingService:                     config.RecordingService,
+		organizationId:                       config.OrganizationId,
+		regionId:                             config.RegionId,
+		entrypointLogFilePath:                config.EntrypointLogFilePath,
 	}
 }
 
@@ -86,7 +92,13 @@ type server struct {
 	terminationCheckIntervalMilliseconds int
 	configDir                            string
 	recordingService                     *recording.RecordingService
+	entrypointLogFilePath                string
+	entrypointLogCancel                  context.CancelFunc
 	httpServer                           *http.Server
+	organizationId                       *string
+	regionId                             *string
+	ctx                                  context.Context
+	cancel                               context.CancelFunc
 }
 
 type Telemetry struct {
@@ -96,6 +108,9 @@ type Telemetry struct {
 }
 
 func (s *server) Start() error {
+	s.ctx, s.cancel = context.WithCancel(context.Background())
+	defer s.cancel()
+
 	docs.SwaggerInfo.Description = "Daytona Toolbox API"
 	docs.SwaggerInfo.Title = "Daytona Toolbox API"
 	docs.SwaggerInfo.BasePath = "/"
@@ -138,7 +153,7 @@ func (s *server) Start() error {
 		r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerfiles.Handler))
 	}
 
-	r.POST("/init", s.Initialize(otelServiceName))
+	r.POST("/init", s.Initialize(otelServiceName, s.entrypointLogFilePath, s.organizationId, s.regionId))
 
 	r.GET("/version", s.GetVersion)
 

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	common_errors "github.com/daytonaio/common-go/pkg/errors"
+	"github.com/daytonaio/common-go/pkg/utils"
 	apiclient "github.com/daytonaio/daytona/libs/api-client-go"
 	"github.com/gin-gonic/gin"
 
@@ -70,13 +71,17 @@ func (p *Proxy) getSnapshotTarget(ctx *gin.Context) (*url.URL, map[string]string
 	}, nil
 }
 
-func (p *Proxy) getSnapshot(ctx context.Context, snapshotId string) (*apiclient.SnapshotDto, error) {
-	snapshot, _, err := p.apiclient.SnapshotsAPI.GetSnapshot(ctx, snapshotId).Execute()
-	if err != nil {
-		return nil, err
-	}
+func (p *Proxy) getSnapshot(ctx *gin.Context, snapshotId string) (*apiclient.SnapshotDto, error) {
+	var snapshot *apiclient.SnapshotDto
+	bearerToken := p.getBearerToken(ctx)
+	apiClient := p.getUserApiClient(ctx, bearerToken)
 
-	return snapshot, nil
+	err := utils.RetryWithExponentialBackoff(ctx, fmt.Sprintf("getSnapshot(%s)", snapshotId), proxyMaxRetries, proxyBaseDelay, proxyMaxDelay, func() error {
+		s, _, e := apiClient.SnapshotsAPI.GetSnapshot(ctx, snapshotId).Execute()
+		snapshot = s
+		return e
+	})
+	return snapshot, err
 }
 
 func (p *Proxy) getRunnerInfo(ctx context.Context, runnerId string) (*RunnerInfo, error) {
@@ -85,7 +90,12 @@ func (p *Proxy) getRunnerInfo(ctx context.Context, runnerId string) (*RunnerInfo
 		return runnerInfo, nil
 	}
 
-	runner, _, err := p.apiclient.RunnersAPI.GetRunnerFullById(ctx, runnerId).Execute()
+	var runner *apiclient.RunnerFull
+	err = utils.RetryWithExponentialBackoff(ctx, fmt.Sprintf("getRunnerInfo(%s)", runnerId), proxyMaxRetries, proxyBaseDelay, proxyMaxDelay, func() error {
+		r, _, e := p.apiclient.RunnersAPI.GetRunnerFullById(context.Background(), runnerId).Execute()
+		runner = r
+		return e
+	})
 	if err != nil {
 		return nil, err
 	}

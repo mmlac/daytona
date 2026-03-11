@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/daytonaio/common-go/pkg/utils"
 	"github.com/gin-gonic/gin"
 )
 
@@ -16,9 +17,8 @@ func (p *Proxy) Authenticate(ctx *gin.Context, sandboxIdOrSignedToken string, po
 	var authErrors []string
 
 	// Try Authorization header with Bearer token
-	authHeader := ctx.Request.Header.Get("Authorization")
-	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
-		bearerToken := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	bearerToken := p.getBearerToken(ctx)
+	if bearerToken != "" {
 		isValid, err := p.getSandboxBearerTokenValid(ctx, sandboxIdOrSignedToken, bearerToken)
 		if err != nil {
 			authErrors = append(authErrors, fmt.Sprintf("Bearer token validation error: %v", err))
@@ -100,8 +100,21 @@ func (p *Proxy) Authenticate(ctx *gin.Context, sandboxIdOrSignedToken string, po
 	return sandboxIdOrSignedToken, true, errors.New(errorMsg)
 }
 
+func (p *Proxy) getBearerToken(ctx *gin.Context) string {
+	authHeader := ctx.Request.Header.Get("Authorization")
+	if authHeader != "" && strings.HasPrefix(authHeader, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	}
+	return ""
+}
+
 func (p *Proxy) getSandboxIdFromSignedPreviewUrlToken(ctx *gin.Context, sandboxIdOrSignedToken string, port float32, cookieDomain string) (string, error) {
-	sandboxId, _, err := p.apiclient.PreviewAPI.GetSandboxIdFromSignedPreviewUrlToken(ctx.Request.Context(), sandboxIdOrSignedToken, port).Execute()
+	var sandboxId string
+	err := utils.RetryWithExponentialBackoff(ctx.Request.Context(), fmt.Sprintf("getSandboxIdFromSignedPreviewUrlToken(%s)", sandboxIdOrSignedToken), proxyMaxRetries, proxyBaseDelay, proxyMaxDelay, func() error {
+		s, _, e := p.apiclient.PreviewAPI.GetSandboxIdFromSignedPreviewUrlToken(ctx.Request.Context(), sandboxIdOrSignedToken, port).Execute()
+		sandboxId = s
+		return e
+	})
 	if err != nil {
 		return "", fmt.Errorf("failed to get sandbox ID: %w. Is the token expired?", err)
 	}
